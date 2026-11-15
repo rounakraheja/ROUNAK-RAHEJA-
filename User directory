@@ -1,0 +1,535 @@
+// M1_UserDirectory.h
+// Member 1 - User Directory and Donor Trust Rating
+// Data Structure : Hash Table with Separate Chaining
+// File Handling  : users.txt , one user per line, tag says which class
+// Feature S4 : Trust Score  S = 0.6F + 0.4Q
+// Feature S5 : Evening Surplus Forecast by exponential smoothing
+#ifndef M1_USERDIRECTORY_H
+#define M1_USERDIRECTORY_H
+#include <iostream>
+#include <iomanip>
+#include <cstring>
+#include <cstdlib>
+#include <cstdio>      // FILE, fopen, fprintf, fgets - C file handling
+using namespace std;
+#define TABLE_SIZE 11
+#define TOTAL_ZONES 6
+
+// ================= PART B : C++ OOP PART =================
+class User
+{
+protected:
+    char id[20];
+    char name[50];
+    int zone;
+public:
+    User(const char *uid, const char *uname, int z)
+    {
+        strcpy(id, uid);  strcpy(name, uname);  zone = z;
+    }
+    virtual ~User() { }
+    char* getId() { return id; }
+    char* getName() { return name; }
+    int getZone() { return zone; }
+    virtual void display() { cout << "  [USER] " << id << " | " << name << endl; }
+    // 'D' for donor, 'R' for ngo
+    virtual char getTag() { return 'U'; }
+    // saving is polymorphic, each kind writes its own kind of line.
+    // loading cannot be, because there is no object yet to call on.
+    virtual void saveTo(FILE *f) { fprintf(f, "U|%s|%s|%d\n", id, name, zone); }
+};
+
+// Feature S5 : forecasting how much surplus a donor will have tonight.
+//
+// Exponential smoothing. Each evening's real figure pulls the estimate
+// towards it by alpha, and the rest of the estimate carries everything
+// that came before. Recent evenings therefore count for more than old
+// ones, and we never have to keep a list of every evening, only the one
+// running number. alpha is 0.4, so the latest evening is worth 40 per
+// cent and the whole of the past is worth 60.
+//
+//     forecast = 0.4 x this evening + 0.6 x the forecast before it
+#define SMOOTH_ALPHA 0.4
+
+class SurplusForecast
+{
+private:
+    float estimate;
+    int readings;
+    int lastOne;
+public:
+    SurplusForecast() { estimate = 0;  readings = 0;  lastOne = 0; }
+
+    void setData(float e, int n, int last) { estimate = e;  readings = n;  lastOne = last; }
+    float getEstimate() { return estimate; }
+    int getReadings() { return readings; }
+    int getLast() { return lastOne; }
+
+    void addReading(int meals)
+    {
+        if (meals < 0) return;              // a negative surplus means nothing
+        // the first evening has nothing to smooth against, so it simply
+        // becomes the estimate
+        if (readings == 0) estimate = meals;
+        else estimate = SMOOTH_ALPHA * meals + (1 - SMOOTH_ALPHA) * estimate;
+        lastOne = meals;
+        readings++;
+    }
+
+    void show()
+    {
+        if (readings == 0)
+        {
+            cout << "    No evenings recorded yet, so there is nothing to forecast from."
+                 << endl;
+            return;
+        }
+        cout << "    Evenings recorded : " << readings << endl;
+        cout << "    Last evening      : " << lastOne << " meals" << endl;
+        cout << "    Forecast tonight  : " << estimate << " meals" << endl;
+        cout << "    forecast = 0.4 x last evening + 0.6 x the forecast before it" << endl;
+        if (readings < 3)
+            cout << "    Only " << readings
+                 << " evening(s) so far, so treat this as a rough guess." << endl;
+    }
+};
+
+class DonorTrustProfile
+{
+private:
+    int pledged;
+    int fulfilled;
+    float quality;
+public:
+    DonorTrustProfile() { pledged = 0;  fulfilled = 0;  quality = 0; }
+    void setData(int p, int f, float q) { pledged = p;  fulfilled = f;  quality = q; }
+    int getPledged() { return pledged; }
+    int getFulfilled() { return fulfilled; }
+    float getQuality() { return quality; }
+    // fulfilment percentage
+    float getF()
+    {
+        if (pledged == 0) return 50;
+        return (fulfilled * 100.0) / pledged;
+    }
+    // S = 0.6F + 0.4Q
+    float getScore() { return 0.6 * getF() + 0.4 * quality; }
+    int isApproved() { return (getScore() >= 75) ? 1 : 0; }
+    void addPledge(int done, float q)
+    {
+        quality = (quality * pledged + q) / (pledged + 1);
+        pledged++;
+        if (done == 1) fulfilled++;
+    }
+    void showScore()
+    {
+        cout << "    Pledges : " << fulfilled << " out of " << pledged << endl;
+        cout << "    S = 0.6(" << getF() << ") + 0.4(" << quality
+             << ") = " << getScore() << endl;
+        cout << "    Status  : " << (isApproved() ? "AUTO-APPROVED" : "MANUAL CHECK") << endl;
+    }
+};
+
+class Donor : public User
+{
+private:
+    int type;
+    DonorTrustProfile trust;
+    SurplusForecast surplus;    // Feature S5
+public:
+    Donor(const char *uid, const char *uname, int z, int t, int p, int f, float q)
+        : User(uid, uname, z) { type = t;  trust.setData(p, f, q); }
+    int getType() { return type; }
+    DonorTrustProfile& getTrust() { return trust; }
+    SurplusForecast& getForecast() { return surplus; }
+    const char* typeName()
+    {
+        if (type == 1) return "Restaurant";
+        if (type == 2) return "Hostel Mess";
+        return "Caterer";
+    }
+    void display()
+    {
+        cout << "  [DONOR] " << id << " | " << name << " | Zone " << zone
+             << " | " << typeName() << " | Trust " << trust.getScore()
+             << (trust.isApproved() ? " (AUTO-APPROVED)" : " (MANUAL CHECK)");
+        if (surplus.getReadings() > 0)
+            cout << " | tonight ~" << surplus.getEstimate() << " meals";
+        cout << endl;
+    }
+    void saveTo(FILE *f)
+    {
+        fprintf(f, "D|%s|%s|%d|%d|%d|%d|%.2f|%.2f|%d|%d\n", id, name, zone, type,
+                trust.getPledged(), trust.getFulfilled(), trust.getQuality(),
+                surplus.getEstimate(), surplus.getReadings(), surplus.getLast());
+    }
+    char getTag() { return 'D'; }
+};
+
+class Recipient : public User
+{
+private:
+    int capacity;
+    int urgency;
+public:
+    Recipient(const char *uid, const char *uname, int z, int cap, int urg)
+        : User(uid, uname, z) { capacity = cap;  urgency = urg; }
+    int getCapacity() { return capacity; }
+    int getUrgency() { return urgency; }
+    void display()
+    {
+        cout << "  [NGO  ] " << id << " | " << name << " | Zone " << zone
+             << " | Capacity " << capacity << " | Urgency " << urgency << endl;
+    }
+    void saveTo(FILE *f)
+    {
+        fprintf(f, "R|%s|%s|%d|%d|%d\n", id, name, zone, capacity, urgency);
+    }
+    char getTag() { return 'R'; }
+};
+
+// ============== PART A : C DATA STRUCTURE PART ==============
+// hash table with separate chaining, only struct and functions
+struct Node
+{
+    char id[20];
+    User *user;
+    struct Node *next;
+};
+
+struct UserDirectory
+{
+    struct Node *bucket[TABLE_SIZE];
+    int count;
+};
+
+// add ascii values and take remainder
+int hashFunction(const char *key)
+{
+    int sum = 0;
+    for (int i = 0; key[i] != '\0'; i++) sum = sum + key[i];
+    return sum % TABLE_SIZE;
+}
+
+void initTable(struct UserDirectory *dir)
+{
+    for (int i = 0; i < TABLE_SIZE; i++) dir->bucket[i] = NULL;
+    dir->count = 0;
+}
+
+// go to the bucket and search its chain
+User* searchUser(struct UserDirectory *dir, const char *id)
+{
+    struct Node *p = dir->bucket[hashFunction(id)];
+    while (p != NULL)
+    {
+        if (strcmp(p->id, id) == 0) return p->user;
+        p = p->next;
+    }
+    return NULL;
+}
+
+// insert at the front of the chain
+int insertUser(struct UserDirectory *dir, const char *id, User *u)
+{
+    if (searchUser(dir, id) != NULL) return 0;
+    int index = hashFunction(id);
+    struct Node *newNode = (struct Node *) malloc(sizeof(struct Node));
+    strcpy(newNode->id, id);
+    newNode->user = u;
+    newNode->next = dir->bucket[index];
+    dir->bucket[index] = newNode;
+    dir->count++;
+    return 1;
+}
+
+int deleteUser(struct UserDirectory *dir, const char *id)
+{
+    int index = hashFunction(id);
+    struct Node *p = dir->bucket[index];
+    struct Node *prev = NULL;
+    while (p != NULL)
+    {
+        if (strcmp(p->id, id) == 0)
+        {
+            if (prev == NULL) dir->bucket[index] = p->next;
+            else prev->next = p->next;
+            delete p->user;
+            free(p);
+            dir->count--;
+            return 1;
+        }
+        prev = p;
+        p = p->next;
+    }
+    return 0;
+}
+
+void freeTable(struct UserDirectory *dir)
+{
+    for (int i = 0; i < TABLE_SIZE; i++)
+    {
+        struct Node *p = dir->bucket[i];
+        while (p != NULL)
+        {
+            struct Node *temp = p;
+            p = p->next;
+            delete temp->user;
+            free(temp);
+        }
+        dir->bucket[i] = NULL;
+    }
+    dir->count = 0;
+}
+
+// display() is virtual so the correct version runs
+void displayAll(struct UserDirectory *dir)
+{
+    cout << "\n  ---- ALL USERS (" << dir->count << ") ----" << endl;
+    if (dir->count == 0) { cout << "  directory is empty" << endl;  return; }
+    for (int i = 0; i < TABLE_SIZE; i++)
+    {
+        struct Node *p = dir->bucket[i];
+        while (p != NULL) { p->user->display();  p = p->next; }
+    }
+}
+
+void displayBuckets(struct UserDirectory *dir)
+{
+    cout << "\n  ---- HASH TABLE (size " << TABLE_SIZE << ") ----" << endl;
+    for (int i = 0; i < TABLE_SIZE; i++)
+    {
+        cout << "  Bucket[" << i << "] : ";
+        struct Node *p = dir->bucket[i];
+        if (p == NULL) cout << "empty";
+        while (p != NULL)
+        {
+            cout << p->id;
+            if (p->next != NULL) cout << " -> ";
+            p = p->next;
+        }
+        cout << endl;
+    }
+}
+
+// 2) FILE HANDLING - the directory is lost when the program closes,
+//    so it is written out as plain text, one user per line.
+//    the first field is the tag, D for donor and R for ngo, because
+//    loading has to know which class to build before it can build it.
+#define USER_FILE "users.txt"
+
+// walk every bucket and let each user write its own line.
+// saveTo() is virtual, so a donor writes a donor line and an ngo
+// writes an ngo line without this loop knowing the difference.
+int saveUsers(struct UserDirectory *dir)
+{
+    FILE *f = fopen(USER_FILE, "w");
+    if (f == NULL)
+    {
+        cout << "  Could not open " << USER_FILE << " for writing." << endl;
+        return -1;
+    }
+    int written = 0;
+    for (int i = 0; i < TABLE_SIZE; i++)
+    {
+        struct Node *p = dir->bucket[i];
+        while (p != NULL)
+        {
+            p->user->saveTo(f);
+            written++;
+            p = p->next;
+        }
+    }
+    fclose(f);
+    cout << "  Users    : " << written << " saved to " << USER_FILE << endl;
+    return written;
+}
+
+// one line is one user. strtok cuts the line at every | and hands
+// back the pieces one at a time.
+int loadUsers(struct UserDirectory *dir)
+{
+    FILE *f = fopen(USER_FILE, "r");
+    if (f == NULL)
+    {
+        cout << "  Users    : no " << USER_FILE << " to read yet." << endl;
+        return -1;
+    }
+    char line[200];
+    int added = 0, skipped = 0;
+    while (fgets(line, 200, f) != NULL)
+    {
+        if (line[0] == '\n') continue;              // blank line
+        char *tag  = strtok(line, "|");
+        char *id   = strtok(NULL, "|");
+        char *name = strtok(NULL, "|");
+        char *zTxt = strtok(NULL, "|");
+        if (tag == NULL || id == NULL || name == NULL || zTxt == NULL)
+        {
+            skipped++;
+            continue;
+        }
+        int zone = atoi(zTxt);
+        if (tag[0] == 'D')
+        {
+            char *t  = strtok(NULL, "|");
+            char *pl = strtok(NULL, "|");
+            char *fu = strtok(NULL, "|");
+            char *q  = strtok(NULL, "|");
+            char *es = strtok(NULL, "|");     // Feature S5
+            char *nr = strtok(NULL, "|");
+            char *lo = strtok(NULL, "|");
+            if (t == NULL || pl == NULL || fu == NULL || q == NULL) { skipped++;  continue; }
+            Donor *d = new Donor(id, name, zone, atoi(t), atoi(pl), atoi(fu), atof(q));
+            // an older users.txt has no forecast on the line, which is
+            // fine, the donor simply starts with no evenings recorded
+            if (es != NULL && nr != NULL && lo != NULL)
+                d->getForecast().setData(atof(es), atoi(nr), atoi(lo));
+            // insertUser refuses an id that is already there, and then
+            // nobody owns this object, so it has to be deleted here
+            if (insertUser(dir, id, d) == 1) added++;
+            else { delete d;  skipped++; }
+        }
+        else if (tag[0] == 'R')
+        {
+            char *cap = strtok(NULL, "|");
+            char *urg = strtok(NULL, "|");
+            if (cap == NULL || urg == NULL) { skipped++;  continue; }
+            Recipient *r = new Recipient(id, name, zone, atoi(cap), atoi(urg));
+            if (insertUser(dir, id, r) == 1) added++;
+            else { delete r;  skipped++; }
+        }
+        else skipped++;
+    }
+    fclose(f);
+    cout << "  Users    : " << added << " loaded";
+    if (skipped > 0) cout << " , " << skipped << " skipped (already there or bad line)";
+    cout << endl;
+    return added;
+}
+
+// Feature S5 : called when a donor really gives food, so tonight's
+// actual figure feeds into tomorrow's forecast. returns 0 if the id
+// is not a donor, which is not an error, an ngo can donate nothing.
+int recordSurplus(struct UserDirectory *dir, const char *donorId, int meals)
+{
+    User *u = searchUser(dir, donorId);
+    if (u == NULL || u->getTag() != 'D') return 0;
+    Donor *d = (Donor *) u;
+    d->getForecast().addReading(meals);
+    return 1;
+}
+
+// ================= MENU FUNCTIONS =================
+void registerDonor(struct UserDirectory *dir)
+{
+    char id[20], name[50];
+    int zone, type, pledged, fulfilled;
+    float quality;
+    cout << "\n  --- REGISTER DONOR ---" << endl;
+    cout << "  Donor ID : ";   cin >> setw(20) >> id;
+    if (searchUser(dir, id) != NULL) { cout << "  ID already used." << endl;  return; }
+    cin.ignore();
+    cout << "  Name     : ";                         cin.getline(name, 50);
+    cout << "  Zone (0-5) : ";                       cin >> zone;
+    cout << "  Type (1=Rest 2=Hostel 3=Caterer) : "; cin >> type;
+    cout << "  Total pledges     : ";                cin >> pledged;
+    cout << "  Pledges fulfilled : ";                cin >> fulfilled;
+    cout << "  Avg quality (0-100) : ";              cin >> quality;
+    if (zone < 0 || zone >= TOTAL_ZONES || type < 1 || type > 3 || pledged < 0 ||
+        fulfilled < 0 || fulfilled > pledged || quality < 0 || quality > 100)
+        {
+        cout << "  Wrong value entered, donor not added." << endl;
+        return;
+    }
+    Donor *d = new Donor(id, name, zone, type, pledged, fulfilled, quality);
+    insertUser(dir, id, d);
+    cout << "\n  Donor registered." << endl;
+    d->getTrust().showScore();
+    cout << "\n  Feature S5 : evening surplus forecast" << endl;
+    d->getForecast().show();
+}
+
+void registerRecipient(struct UserDirectory *dir)
+{
+    char id[20], name[50];
+    int zone, capacity, urgency;
+    cout << "\n  --- REGISTER NGO / SHELTER ---" << endl;
+    cout << "  Recipient ID : ";  cin >> setw(20) >> id;
+    if (searchUser(dir, id) != NULL) { cout << "  ID already used." << endl;  return; }
+    cin.ignore();
+    cout << "  Name       : ";        cin.getline(name, 50);
+    cout << "  Zone (0-5) : ";        cin >> zone;
+    cout << "  Capacity (meals) : ";  cin >> capacity;
+    cout << "  Urgency (1-10)   : ";  cin >> urgency;
+    if (zone < 0 || zone >= TOTAL_ZONES || capacity <= 0 || urgency < 1 || urgency > 10)
+    {
+        cout << "  Wrong value entered, recipient not added." << endl;
+        return;
+    }
+    insertUser(dir, id, new Recipient(id, name, zone, capacity, urgency));
+    cout << "\n  Recipient registered." << endl;
+}
+
+void findUserMenu(struct UserDirectory *dir)
+{
+    char id[20];
+    cout << "\n  --- SEARCH USER ---" << endl;
+    cout << "  Enter ID : ";  cin >> setw(20) >> id;
+    cout << "  Bucket number = " << hashFunction(id) << endl;
+    User *u = searchUser(dir, id);
+    if (u == NULL) cout << "  User not found." << endl;
+    else u->display();
+}
+
+void trustRatingMenu(struct UserDirectory *dir)
+{
+    char id[20];
+    cout << "\n  --- DONOR TRUST AND SURPLUS FORECAST ---" << endl;
+    cout << "  Enter donor ID : ";  cin >> setw(20) >> id;
+    User *u = searchUser(dir, id);
+    if (u == NULL || u->getTag() != 'D') { cout << "  No such donor." << endl;  return; }
+    Donor *d = (Donor *) u;
+    cout << "\n  Donor : " << d->getName() << endl;
+    d->getTrust().showScore();
+    cout << "\n  Feature S5 : evening surplus forecast" << endl;
+    d->getForecast().show();
+}
+
+// Feature S5 : give a donor four past evenings in one go, so the
+// forecast has something to work from on the very first run
+void seedEvenings(Donor *d, int e1, int e2, int e3, int e4)
+{
+    d->getForecast().addReading(e1);
+    d->getForecast().addReading(e2);
+    d->getForecast().addReading(e3);
+    d->getForecast().addReading(e4);
+}
+
+void loadDemoUsers(struct UserDirectory *dir)
+{
+    // the four evening figures are what each donor actually had spare on
+    // the last four nights. the forecast is built from them in order.
+    Donor *d1 = new Donor("D101", "Hotel Sunrise", 1, 1, 10, 9, 88);
+    seedEvenings(d1, 40, 55, 45, 60);
+    insertUser(dir, "D101", d1);
+
+    Donor *d2 = new Donor("D102", "GEU Boys Hostel", 3, 2, 20, 12, 70);
+    seedEvenings(d2, 90, 70, 85, 75);
+    insertUser(dir, "D102", d2);
+
+    Donor *d3 = new Donor("D103", "Royal Caterers", 4, 3, 5, 5, 92);
+    seedEvenings(d3, 100, 120, 80, 110);
+    insertUser(dir, "D103", d3);
+
+    Donor *d4 = new Donor("D104", "Cafe Mountain", 0, 1, 8, 4, 60);
+    seedEvenings(d4, 20, 25, 15, 30);
+    insertUser(dir, "D104", d4);
+
+    insertUser(dir, "N501", new Recipient("N501", "Asha Shelter", 2, 80, 9));
+    insertUser(dir, "N502", new Recipient("N502", "Bal Ashram", 5, 120, 6));
+    insertUser(dir, "N503", new Recipient("N503", "Seva Shelter", 1, 60, 10));
+    cout << "  Demo data loaded (4 donors, 3 NGOs)." << endl;
+}
+
+#endif
